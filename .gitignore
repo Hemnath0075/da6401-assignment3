@@ -1,2 +1,7 @@
 .venv
 dataset
+wandb
+trained_models
+saved_models
+model_logs
+ch24s016-iitm

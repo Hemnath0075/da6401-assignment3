@@ -1,6 +1,7 @@
 # DA6401_CH24S016: Assignment 3
 
 ## Wandb Report link 
+https://wandb.ai/ch24s016-iitm/Seq2SeqAssignment3/reports/Assignment-3--VmlldzoxMjg1NTIyOA
 
 ## Problem Statement
 The objective of this assignment is to build a **character-level sequence-to-sequence transliteration model** that converts Tamil words (e.g., `"amma"`) into their corresponding tamil script (e.g., `"அம்மா"`). This task involves training an **encoder-decoder** architecture using recurrent neural networks (RNNs) on the **Dakshina dataset**.

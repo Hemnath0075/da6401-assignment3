@@ -12,6 +12,13 @@ filename = f'model_logs/{timestamp}.txt'
 # Set up logging with the timestamped filename
 logging.basicConfig(filename=filename, level=logging.INFO, format='%(asctime)s - %(message)s')
 
+import torch
+import torch.nn as nn
+
+device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+
 class Encoder(nn.Module):
     def __init__(self, input_vocab_size, embed_size, hidden_size, num_layers=1, cell_type="LSTM"):
         super(Encoder, self).__init__()
@@ -21,25 +28,56 @@ class Encoder(nn.Module):
         self.cell_type = cell_type
 
     def forward(self, x):
-        embedded = self.embedding(x)
-        outputs, hidden = self.rnn(embedded)
-        return hidden
+        embedded = self.embedding(x)  # (batch, seq_len, embed_size)
+        outputs, hidden = self.rnn(embedded)  # outputs: (batch, seq_len, hidden)
+        return outputs, hidden  # return all hidden states for attention
+
+
+class Attention(nn.Module):
+    def __init__(self, hidden_size):
+        super(Attention, self).__init__()
+        self.attn = nn.Linear(hidden_size * 2, hidden_size)
+        self.v = nn.Linear(hidden_size, 1, bias=False)
+
+    def forward(self, hidden, encoder_outputs):
+        """
+        hidden: (batch, hidden) - current decoder hidden state
+        encoder_outputs: (batch, src_len, hidden) - all encoder hidden states
+        """
+        batch_size, src_len, _ = encoder_outputs.size()
+
+        hidden = hidden.unsqueeze(1).repeat(1, src_len, 1)  # (batch, src_len, hidden)
+        energy = torch.tanh(self.attn(torch.cat((hidden, encoder_outputs), dim=2)))  # (batch, src_len, hidden)
+        attention = self.v(energy).squeeze(2)  # (batch, src_len)
+        return torch.softmax(attention, dim=1)
 
 
 class Decoder(nn.Module):
     def __init__(self, output_vocab_size, embed_size, hidden_size, num_layers=1, cell_type="LSTM"):
         super(Decoder, self).__init__()
         self.embedding = nn.Embedding(output_vocab_size, embed_size)
-        rnn_class = {"RNN": nn.RNN, "LSTM": nn.LSTM, "GRU": nn.GRU}[cell_type]
-        self.rnn = rnn_class(embed_size, hidden_size, num_layers, batch_first=True)
+        self.attention = Attention(hidden_size)
+        self.rnn_cell_type = cell_type
+        self.rnn = nn.LSTM(embed_size + hidden_size, hidden_size, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, output_vocab_size)
-        self.cell_type = cell_type
 
-    def forward(self, x, hidden):
-        embedded = self.embedding(x)
-        output, hidden = self.rnn(embedded, hidden)
-        predictions = self.fc(output.squeeze(1))  # (batch_size, vocab_size)
-        return predictions, hidden
+    def forward(self, x, hidden, encoder_outputs):
+        # x: (batch, 1)
+        embedded = self.embedding(x)  # (batch, 1, embed_size)
+
+        if self.rnn_cell_type == "LSTM":
+            h = hidden[0][-1]  # (batch, hidden)
+        else:
+            h = hidden[-1]  # GRU or RNN
+
+        attn_weights = self.attention(h, encoder_outputs)  # (batch, src_len)
+        context = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs)  # (batch, 1, hidden)
+
+        rnn_input = torch.cat((embedded, context), dim=2)  # (batch, 1, embed+hidden)
+        output, hidden = self.rnn(rnn_input, hidden)  # output: (batch, 1, hidden)
+        prediction = self.fc(output.squeeze(1))  # (batch, vocab_size)
+
+        return prediction, hidden
 
 
 class Seq2Seq(nn.Module):
@@ -54,12 +92,12 @@ class Seq2Seq(nn.Module):
         vocab_size = self.decoder.fc.out_features
 
         outputs = torch.zeros(batch_size, target_len, vocab_size).to(device)
-        hidden = self.encoder(source)
 
+        encoder_outputs, hidden = self.encoder(source)
         input = target[:, 0].unsqueeze(1)
 
         for t in range(1, target_len):
-            output, hidden = self.decoder(input, hidden)
+            output, hidden = self.decoder(input, hidden, encoder_outputs)
             outputs[:, t] = output
             teacher_force = torch.rand(1).item() < teacher_forcing_ratio
             top1 = output.argmax(1)
@@ -172,13 +210,14 @@ sweep_config = {
     'metric': {'name': "val_accuracy", 'goal': 'maximize'},
     'parameters': {
         'embed_size': {'values': [32, 64, 128]},
-        'hidden_size': {'values': [64, 128, 256]},
+        'hidden_size': {'values': [128, 256]},
         'num_layers': {'values': [1]},
         'cell_type': {'values': ['RNN', 'GRU', 'LSTM']},
-        'optimizer': {'values': ['adam', 'adamw','sgd']},
+        'optimizer': {'values': ['adam', 'adamw']},
         'lr': {'values': [0.01, 0.001, 0.0001]},
         'batch_size': {'values': [32, 64]},
-        'epochs': {'values': [10 , 15]}
+        'epochs': {'values': [10 , 15]},
+        'with_attention':{'values':['yes']}
     },
 }
 
@@ -274,7 +313,7 @@ def train_sweep():
     logging.info(f"Model saved to {model_path}")
     wandb.finish()
     
-sweep_id = wandb.sweep(sweep_config, project="Seq2SeqAssignment3")
-wandb.agent(sweep_id, function=train_sweep, count=30)
+sweep_id = wandb.sweep(sweep_config, project="Seq2SeqAssignment3withAttention")
+wandb.agent(sweep_id, function=train_sweep, count=15)
 
 
